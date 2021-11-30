@@ -1,52 +1,109 @@
 package blockchain
 
-import "bytes"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
 
-//Blockchain represents structure that holds block in fixed order
+//ErrValidation occurs when validation does not pass.
+var ErrValidation = errors.New("validation error")
+
+//DataValidator represents entity that has ability to verify Block's data integrity and type.
+type DataValidator interface {
+	//Validate validates data against set of rules
+	Validate(bc *Blockchain, data interface{}) bool
+}
+
+//ChainValidator represents entity that has ability to validate data integrity of Blockchain.
+type ChainValidator interface {
+	//Validate validates Blockchain
+	Validate(bc *Blockchain) bool
+}
+
+//Blockchain represents structure that holds blocks in fixed order.
 type Blockchain struct {
-	//Chain holds blocks in fixed order
+	//Chain holds Blocks in fixed order
 	Chain []*Block
+
+	//chainValidator validates data integrity of Chain
+	chainValidator ChainValidator
+
+	//dataValidator validates new Block's data while adding it to Blockchain
+	dataValidator DataValidator
+
+	//difficulty is level of mining difficulty while adding new Block to Blockchain,
+	//should be value greater than 0,
+	//the higher value, the more time needs to pass until new Block is added to Blockchain,
+	//but the more secure Blockchain becomes itself.
+	difficulty uint8
 }
 
-//NewBlockchain returns pointer to Blockchain with genesis block in it
-func NewBlockchain() *Blockchain {
-	genesisBlock, _ := NewBlock([]byte("0"), map[string]bool{"isGenesis": true})
-
-	b := Blockchain{Chain: []*Block{genesisBlock}}
-
-	return &b
-}
-
-//AddBlock adds block of data to blockchain
-func (b *Blockchain) AddBlock(data interface{}) error {
-	lastBlock := b.Chain[len(b.Chain) - 1]
-	newBlock, err := NewBlock(lastBlock.Hash, data)
+//NewBlockchain returns pointer to Blockchain with genesis block in it.
+func NewBlockchain(genesisBlock *Block, cv ChainValidator, dv DataValidator, mineDifficulty uint8) (*Blockchain, error) {
+	hash, err := CalculateHash(genesisBlock)
 	if err != nil {
+		return &Blockchain{}, err
+	}
+
+	genesisBlock.Hash = hash
+
+	return &Blockchain{
+		Chain:          []*Block{genesisBlock},
+		difficulty:     mineDifficulty,
+		chainValidator: cv,
+		dataValidator:  dv,
+	}, nil
+}
+
+//AddBlock adds Block containing provided data to Blockchain
+func (b *Blockchain) AddBlock(data interface{}) error {
+	//validating incoming data
+	if !b.dataValidator.Validate(b, data) {
+		return fmt.Errorf("%w: data does not pass validation", ErrValidation)
+	}
+
+	//creating new block with provided data
+	lastBlock := b.Chain[len(b.Chain)-1]
+	newBlock := NewBlock(lastBlock.Hash, data)
+
+	//mining block according to Blockchain difficulty
+	if err := newBlock.Mine(b.difficulty); err != nil {
 		return err
 	}
 
-	newBlock.Mine(1)
+	//adding new Block to Chain
 	b.Chain = append(b.Chain, newBlock)
 
 	return nil
 }
 
-//IsValid checks whether blockchain is valid according to set of rules
-func (b * Blockchain) IsValid() bool {
-	for i := 1; i < len(b.Chain); i++ {
-		currentBlock := b.Chain[i]
-		previousBlock := b.Chain[i - 1]
+//IsValid checks whether Blockchain is valid according to set of rules.
+func (b *Blockchain) IsValid() bool {
+	return b.chainValidator.Validate(b)
+}
 
-		currentBlockComputedHash, _ := CalculateHash(*currentBlock)
+//String is function that prints Blockchain in pretty format.
+func (b *Blockchain) String() string {
+	s := ""
+	s += fmt.Sprintf("Mining difficulty: %d\n", b.difficulty)
+	s += fmt.Sprintf("Number of blocks:  %d\n", len(b.Chain))
 
-		if !bytes.Equal(currentBlock.Hash, currentBlockComputedHash) {
-			return false
-		}
+	for i, block := range b.Chain {
+		serializedData, _ := json.MarshalIndent(block.Data, "\t", "\t")
+		unixTimeUTC := time.Unix(block.TimeStamp, 0)
 
-		if !bytes.Equal(currentBlock.PreviousHash, previousBlock.Hash) {
-			return false
-		}
+		s += fmt.Sprintf(`%d: 
+{
+	"data": %s,
+	"hash": %x,
+	"previousHash": %x,
+	"proofOfWork": %d,
+	"createdAt": "%s"
+}
+`, i, string(serializedData), block.Hash, block.PreviousHash, block.ProofOfWork, unixTimeUTC.Format(time.RFC3339))
 	}
 
-	return true
+	return s
 }

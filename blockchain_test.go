@@ -5,98 +5,145 @@ import (
 	"testing"
 )
 
-func testGenesisBlock(bc *Blockchain) func(t *testing.T) {
-	return func(t *testing.T) {
-		if len(bc.Chain) != 1 {
-			t.Errorf("initialized blockchain lenght should be 1, got: %d", len(bc.Chain))
-		}
-
-		genesisBlock := bc.Chain[0]
-		if !bytes.Equal(genesisBlock.PreviousHash, []byte("0")) {
-			t.Errorf("genesis block previous hash doesnt match expected: 0")
-		}
-
-		expectedData, ok := genesisBlock.Data.(map[string]bool)
-		if !ok {
-			t.Errorf("genesis block Data is not map[string]bool")
-		}
-
-		isGenesis, exists := expectedData["isGenesis"]
-		if !exists {
-			t.Errorf("genesis block Data does not contain key: isGenesis")
-		}
-
-		if !isGenesis {
-			t.Errorf("genesis block Data key 'isGenesis' has value false")
-		}
-	}
+//User is struct that will be passed as data to blockchain
+type User struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
 }
 
-func testRegularBlock(data map[string]string, bc *Blockchain) func(t *testing.T) {
-	return func(t *testing.T) {
-		if err := bc.AddBlock(data); err != nil {
-			t.Errorf("could not add second block to blockchain, err: %v", err)
+type UserDataValidator struct{}
+
+//Validate checks whether passed data is of type User, nothing more
+func (u UserDataValidator) Validate(bc *Blockchain, data interface{}) bool {
+	_, ok := data.(User)
+	return ok
+}
+
+type UserBlockchainValidator struct{}
+
+//Validate checks whether first block is genesis block and whether following block Hash and PreviousHash matches
+func (u UserBlockchainValidator) Validate(bc *Blockchain) bool {
+	//validates first block (only genesis block)
+	genesisBlock := bc.Chain[0]
+	data, ok := genesisBlock.Data.(map[string]bool)
+	if !ok {
+		return false
+	}
+
+	isGenesis, exists := data["isGenesis"]
+	if !exists {
+		return false
+	}
+
+	if !isGenesis {
+		return false
+	}
+
+	//validates rest of blockchain (except genesis block)
+	for i := 1; i < len(bc.Chain); i++ {
+		currentBlock := bc.Chain[i]
+		previousBlock := bc.Chain[i-1]
+
+		currentBlockComputedHash, _ := CalculateHash(currentBlock)
+
+		if !bytes.Equal(currentBlock.Hash, currentBlockComputedHash) {
+			return false
 		}
 
-		firstBlock := bc.Chain[len(bc.Chain) -1]
-		genesisBlock := bc.Chain[len(bc.Chain) - 2]
-
-		if !bytes.Equal(firstBlock.PreviousHash, genesisBlock.Hash) {
-			t.Errorf("first block PreviousHash differs from genesis block Hash")
-		}
-
-		if ! (firstBlock.ProofOfWork > 0) {
-			t.Errorf("first block proof of work should be greater than 0")
-		}
-
-		expectedData, ok := firstBlock.Data.(map[string]string)
-		if !ok {
-			t.Errorf("genesis block Data is not map[string]bool")
-		}
-
-		name, exists := expectedData["name"]
-		if !exists {
-			t.Errorf("block does not contain 'name' property")
-		}
-
-		if name != data["name"] {
-			t.Errorf("block data name property: %s is not what expected: %s", name, data["name"])
+		if !bytes.Equal(currentBlock.PreviousHash, previousBlock.Hash) {
+			return false
 		}
 	}
+
+	return true
 }
 
 func TestNewBlockchain(t *testing.T) {
-	blockchain1 := NewBlockchain()
-	testGensisBlockFunc := testGenesisBlock(blockchain1)
-	t.Run("initialization blockchain with genesis block", testGensisBlockFunc)
+	udv := UserDataValidator{}
+	ubv := UserBlockchainValidator{}
+
+	genesisBlock := NewBlock([]byte("0"), map[string]bool{"isGenesis": true})
+	difficulty := uint8(2)
+
+	blockchain1, err := NewBlockchain(genesisBlock, ubv, udv, difficulty)
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	if blockchain1.difficulty != difficulty {
+		t.Errorf("difficulty is not %d", difficulty)
+	}
+
+	if len(blockchain1.Chain) != 1 {
+		t.Errorf("invalid number of Block in blockchain, expected 1, got: %d", len(blockchain1.Chain))
+	}
 }
 
 func TestBlockchain_AddBlock(t *testing.T) {
-	blockchain2 := NewBlockchain()
-	testGensisBlockFunc2 := testGenesisBlock(blockchain2)
+	udv := UserDataValidator{}
+	ubv := UserBlockchainValidator{}
 
-	t.Run("initialize blockchain with 2 blocks, one genesis, second other", func(t *testing.T) {
-		testGensisBlockFunc2(t)
-		addRegularBlockFunc := testRegularBlock(map[string]string{"name": "pawel"}, blockchain2)
-		addRegularBlockFunc(t)
-		addRegularBlockFunc2 := testRegularBlock(map[string]string{"name": "val"}, blockchain2)
-		addRegularBlockFunc2(t)
-	})
+	genesisBlock := NewBlock([]byte("0"), map[string]bool{"isGenesis": true})
+
+	blockchain1, err := NewBlockchain(genesisBlock, ubv, udv, 2)
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	err = blockchain1.AddBlock(User{Name: "Iwo", Age: 20})
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	err = blockchain1.AddBlock(User{Name: "Agness", Age: 22})
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	err = blockchain1.AddBlock(User{Name: "Ty", Age: 58})
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	lastBlock := blockchain1.Chain[len(blockchain1.Chain)-1]
+
+	if lastBlock.ProofOfWork == 0 {
+		t.Errorf("last block is not minned")
+	}
+
+	if bytes.Equal(lastBlock.Hash, []byte("")) || bytes.Equal(lastBlock.PreviousHash, []byte("")) {
+		t.Errorf("something wrong with hashes in last block")
+	}
 }
 
 func TestBlockchain_IsValid(t *testing.T) {
-	blockchain2 := NewBlockchain()
-	testGensisBlockFunc2 := testGenesisBlock(blockchain2)
+	udv := UserDataValidator{}
+	ubv := UserBlockchainValidator{}
 
-	t.Run("initialize blockchain with 2 blocks, one genesis, second other", func(t *testing.T) {
-		testGensisBlockFunc2(t)
-		addRegularBlockFunc := testRegularBlock(map[string]string{"name": "pawel"}, blockchain2)
-		addRegularBlockFunc(t)
-		addRegularBlockFunc2 := testRegularBlock(map[string]string{"name": "val"}, blockchain2)
-		addRegularBlockFunc2(t)
+	genesisBlock := NewBlock([]byte("0"), map[string]bool{"isGenesis": true})
 
-		if !blockchain2.IsValid() {
-			t.Errorf("blockchain is not valid")
-		}
-	})
+	blockchain1, err := NewBlockchain(genesisBlock, ubv, udv, 2)
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	err = blockchain1.AddBlock(User{Name: "Iwo", Age: 20})
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	err = blockchain1.AddBlock(User{Name: "Agness", Age: 22})
+	if err != nil {
+		t.Errorf("%v", err)
+	}
+
+	if !blockchain1.IsValid() {
+		t.Errorf("something wrong with IsValid func")
+	}
+
+	blockchain1.Chain[1].Data = map[string]string{"corrupted": "data"}
+
+	if blockchain1.IsValid() {
+		t.Errorf("validation does not work")
+	}
 }
